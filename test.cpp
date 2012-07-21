@@ -44,6 +44,10 @@ public:
 	virtual void Decompress() = 0;
 
 public:
+	IndexCompressor() 
+		: Progress(0)
+	{
+	}
 	void FlushWordInt() {
 		if (Docs.empty())
 			return;
@@ -359,14 +363,12 @@ struct VarintCodec : public Codec
 {
 	vector<ui8> Dict;
 	vector<ui8> Data;
-	int Progress;
 	int PackedWords;
 	int PackedDocs;
 	int PackedHits;
 
 	VarintCodec()
-		: Progress(0)
-		, PackedWords(0)
+		: PackedWords(0)
 		, PackedDocs(0)
 		, PackedHits(0)
 	{}
