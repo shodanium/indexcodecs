@@ -1,3 +1,6 @@
+// cl /O2 /EHsc test.cpp
+// test postings.bin
+
 #include <stdlib.h>
 #include <stdio.h>
 #include <vector>
@@ -8,6 +11,63 @@ typedef unsigned char ui8;
 typedef unsigned short ui16;
 typedef unsigned int ui32;
 typedef unsigned long long ui64;
+
+//////////////////////////////////////////////////////////////////////////
+
+struct IndexCompressor
+{
+	ui8 Name[256];
+	ui8 Length;
+	ui32 Doc;
+	ui32 Pos;
+	std::vector<ui8> Code;
+	ui64 Position;
+	struct TDoc {
+		ui32 Id;
+		std::vector<ui32> PostingList;
+	};
+	ui8 Count;
+	std::vector<TDoc> Docs;
+
+	IndexCompressor()
+		: Position(0)
+	{}
+
+	virtual void FlushWord() = 0;
+	virtual void PostCompress() = 0;
+	virtual void Decompress() = 0;
+
+	bool Read(FILE *fp) {
+		static int a = 0;
+		if (!feof(fp)) {
+			ui8 type;
+			fread(&type, 1, 1, fp);
+			if (type) {
+				FlushWord();
+				fread(&Length, 1, 1, fp);
+				fread(Name, 1, Length, fp);
+				Name[(size_t)Length + 1] = 0;
+			}
+			fread(&Doc, 4, 1, fp);
+			fread(&Pos, 4, 1, fp);
+			return !feof(fp);
+		}
+		return false;
+	}
+
+	void Compress(FILE *fp) {
+		while (Read(fp)) {
+			if (Docs.empty() || Docs.back().Id != Doc) {
+				Docs.push_back(TDoc());
+				Docs.back().Id = Doc;
+			}
+			Docs.back().PostingList.push_back(Pos);
+		}
+		FlushWord();
+	}
+};
+
+//////////////////////////////////////////////////////////////////////////
 
 struct THuffEntry {
 	ui32 CodeBase;
@@ -163,20 +223,9 @@ const THuffEntry posEntries[] = {
 {0x00000000, 0x00, 0x05, 0x19},
 };
 
-struct IndexCompressor {
-	ui8 Name[256];
-	ui8 Length;
-	ui32 Doc;
-	ui32 Pos;
-	std::vector<ui8> Code;
-	ui64 Position;
-	struct TDoc {
-		ui32 Id;
-		std::vector<ui32> PostingList;
-	};
-	ui8 Count;
-	std::vector<TDoc> Docs;
 
+struct HuffIndexCompressor : public IndexCompressor
+{
 	THuffCompressor<1024> DocCompressor;
 	THuffCompressor<128> CntCompressor;
 	THuffCompressor<4096> PosCompressor;
@@ -187,10 +236,8 @@ struct IndexCompressor {
 	THuffDecompressor<32> PosDecompressor;
 	THuffDecompressor<32> WrdDecompressor;
 
-	
-	IndexCompressor() 
-		: Position(0)
-		, DocCompressor(docEntries, sizeof(docEntries) / sizeof(docEntries[0]))
+	HuffIndexCompressor()
+		: DocCompressor(docEntries, sizeof(docEntries) / sizeof(docEntries[0]))
 		, CntCompressor(cntEntries, sizeof(cntEntries) / sizeof(cntEntries[0]))
 		, PosCompressor(posEntries, sizeof(posEntries) / sizeof(posEntries[0]))
 		, WrdCompressor(cntEntries, sizeof(cntEntries) / sizeof(cntEntries[0]))
@@ -198,8 +245,41 @@ struct IndexCompressor {
 		, CntDecompressor(cntEntries, sizeof(cntEntries) / sizeof(cntEntries[0]))
 		, PosDecompressor(posEntries, sizeof(posEntries) / sizeof(posEntries[0]))
 		, WrdDecompressor(cntEntries, sizeof(cntEntries) / sizeof(cntEntries[0]))
-	{
+	{}
+
+	void FlushWord() {
+		if (Docs.empty())
+			return;
+		if (++Count == 0) {
+			fprintf(stdout, ".");
+			fflush(stdout);
+		}
+
+		WrdCompressor.Code(Code, Docs.size(), Position);
+		ui32 oldDoc = ui32(-1);
+		for (size_t i = 0; i < Docs.size(); ++i) {
+			const TDoc &doc = Docs[i];
+			DocCompressor.Code(Code, doc.Id - oldDoc, Position);
+			oldDoc = doc.Id;
+			CntCompressor.Code(Code, doc.PostingList.size(), Position);
+			ui32 oldPosting = ui32(-1);
+			for (size_t j = 0; j < doc.PostingList.size(); ++j) {
+				PosCompressor.Code(Code, doc.PostingList[j] - oldPosting, Position);
+				oldPosting = doc.PostingList[j];
+			}
+		}
+		Docs.clear();
 	}
+
+	void PostCompress()
+	{
+		printf("\n");
+		printf("Bytes %lld\n", (long long)Position / 8);
+		printf("Words %lld\n", (long long)WrdCompressor.Count);
+		printf("Docs %lld\n", (long long)DocCompressor.Count);
+		printf("Postings %lld\n", (long long)PosCompressor.Count);
+	}
+
 	void Decompress() {
 		if (Code.empty())
 			return;
@@ -227,77 +307,26 @@ struct IndexCompressor {
 
 		printf("%lld %lld %lld\n", words, docs, pos);
 	}
-
-
-	void Flush() {
-		if (Docs.empty())
-			return;
-		if (++Count == 0) {
-			fprintf(stdout, ".");
-			fflush(stdout);
-		}
-
-		WrdCompressor.Code(Code, Docs.size(), Position);
-		ui32 oldDoc = ui32(-1);
-		for (size_t i = 0; i < Docs.size(); ++i) {
-			const TDoc &doc = Docs[i];
-			DocCompressor.Code(Code, doc.Id - oldDoc, Position);
-			oldDoc = doc.Id;
-			CntCompressor.Code(Code, doc.PostingList.size(), Position);
-			ui32 oldPosting = ui32(-1);
-			for (size_t j = 0; j < doc.PostingList.size(); ++j) {
-				PosCompressor.Code(Code, doc.PostingList[j] - oldPosting, Position);
-				oldPosting = doc.PostingList[j];
-			}
-		}
-		Docs.clear();
-	}
-
-	bool Read(FILE *fp) {
-		static int a = 0;
-		if (!feof(fp)) {
-			ui8 type;
-			fread(&type, 1, 1, fp);
-			if (type) {
-				Flush();
-				fread(&Length, 1, 1, fp);
-				fread(Name, 1, Length, fp);
-				Name[(size_t)Length + 1] = 0;
-			}
-			fread(&Doc, 4, 1, fp);
-			fread(&Pos, 4, 1, fp);
-			return !feof(fp);
-		}
-		return false;
-	}
-
-	void Compress(FILE *fp) {
-		while (Read(fp)) {
-			if (Docs.empty() || Docs.back().Id != Doc) {
-				Docs.push_back(TDoc());
-				Docs.back().Id = Doc;
-			}
-			Docs.back().PostingList.push_back(Pos);
-		}
-		Flush();
-		printf("\n");
-		printf("Bytes %lld\n", (long long)Position / 8);
-		printf("Words %lld\n", (long long)WrdCompressor.Count);
-		printf("Docs %lld\n", (long long)DocCompressor.Count);
-		printf("Postings %lld\n", (long long)PosCompressor.Count);
-	};
 };
+
+//////////////////////////////////////////////////////////////////////////
 
 int main(int argc, const char *argv[]) {
 	if (argc < 2)
+	{
+		printf("usage: test <postings.file>\n");
 		return 1;
+	}
 	FILE *fp = fopen(argv[1], "rb");
-	if (!fp) {
+	if (!fp)
+	{
+		printf("failed to to open %s\n", argv[1]);
 		return 1;
 	}
 
-	IndexCompressor comp;
+	HuffIndexCompressor comp;
 	comp.Compress(fp);
+	comp.PostCompress();
 	float cl1 = clock();
 	comp.Decompress();
 	float cl2 = clock();
