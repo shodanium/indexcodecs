@@ -43,6 +43,10 @@ public:
 	virtual void Decompress() = 0;
 
 public:
+	IndexCompressor() 
+		: Progress(0)
+	{
+	}
 	void FlushWordInt() {
 		if (Docs.empty())
 			return;
@@ -357,25 +361,18 @@ struct VarintIndexCompressor : public IndexCompressor
 {
 	vector<ui8> Dict;
 	vector<ui8> Data;
-	int Progress;
 	int PackedWords;
 	int PackedDocs;
 	int PackedHits;
 
 	VarintIndexCompressor()
-		: Progress(0)
-		, PackedWords(0)
+		: PackedWords(0)
 		, PackedDocs(0)
 		, PackedHits(0)
 	{}
 
 	virtual void FlushWord()
 	{
-		if (!(++Progress%100))
-		{
-			printf("%d\r", Progress);
-			fflush(stdout);
-		}
 		int p = Dict.size();
 		int t = Data.size();
 
