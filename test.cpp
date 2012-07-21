@@ -10,6 +10,7 @@
 #include <vector>
 #include <assert.h>
 #include <time.h>
+#include <string.h>
 
 using namespace std;
 
@@ -35,21 +36,31 @@ public:
 		std::vector<ui32> PostingList;
 	};
 	std::vector<TDoc> Docs;		///< current docid, and a positions list
-
+    int Progress;
 public:
 	virtual void FlushWord() = 0;
 	virtual void PostCompress() = 0;
 	virtual void Decompress() = 0;
 
 public:
+	void FlushWordInt() {
+		if (Docs.empty())
+			return;
+		if (!(++Progress%100))
+		{
+			printf("%d\r", Progress);
+			fflush(stdout);
+		}
+		FlushWord();
+		Docs.clear();
+    }
 	bool Read(FILE *fp) {
 		static int a = 0;
 		if (!feof(fp)) {
 			ui8 type;
 			fread(&type, 1, 1, fp);
 			if (type) {
-				FlushWord();
-				Docs.clear();
+				FlushWordInt();
 				fread(&Length, 1, 1, fp);
 				fread(Name, 1, Length, fp);
 				Name[(size_t)Length + 1] = 0;
@@ -69,7 +80,7 @@ public:
 			}
 			Docs.back().PostingList.push_back(Pos);
 		}
-		FlushWord();
+		FlushWordInt();
 		Docs.clear();
 	}
 };
@@ -112,9 +123,9 @@ struct THuffDecompressor {
 	ui32 CodeBase[Size];
 	ui32 Decompress(const ui8 *codes, ui64 &offset) {
 		ui64 code = (*((const ui64 *)(codes + (offset >> 3)))) >> (offset & 7);
-		ui64 index = code % Size;
+		ui32 index = code % Size;
 		offset += Add[index];
-		return ui32(((code >> PrefLength[index]) & Mask[index])) + CodeBase[index];
+		return (ui32(code >> PrefLength[index]) & Mask[index]) + CodeBase[index];
 	}
 };
 
@@ -259,13 +270,6 @@ struct HuffIndexCompressor : public IndexCompressor
 	{}
 
 	void FlushWord() {
-		if (Docs.empty())
-			return;
-		if (++Count == 0) {
-			fprintf(stdout, ".");
-			fflush(stdout);
-		}
-
 		WrdCompressor.Code(Code, Docs.size(), Position);
 		ui32 oldDoc = ui32(-1);
 		for (size_t i = 0; i < Docs.size(); ++i) {
@@ -406,7 +410,7 @@ struct VarintIndexCompressor : public IndexCompressor
 
 	virtual void PostCompress()
 	{
-		printf("total %d bytes (%d dict, %d data), %d words\n",
+		printf("total %lu bytes (%lu dict, %lu data), %d words\n",
 			Dict.size() + Data.size(), Dict.size(), Data.size(), Progress);
 		printf("packed %d words, %d docs, %d hits\n",
 			PackedWords, PackedDocs, PackedHits);
