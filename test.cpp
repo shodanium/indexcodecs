@@ -1,11 +1,17 @@
 // cl /O2 /EHsc test.cpp
 // test postings.bin
 
+#define _SECURE_SCL 0
+#pragma runtime_checks("",off)
+#define _HAS_ITERATOR_DEBUGGING 0
+
 #include <stdlib.h>
 #include <stdio.h>
 #include <vector>
 #include <assert.h>
 #include <time.h>
+
+using namespace std;
 
 typedef unsigned char ui8;
 typedef unsigned short ui16;
@@ -16,27 +22,26 @@ typedef unsigned long long ui64;
 
 struct IndexCompressor
 {
-	ui8 Name[256];
-	ui8 Length;
-	ui32 Doc;
-	ui32 Pos;
-	std::vector<ui8> Code;
-	ui64 Position;
+public:
+	/// Read() fills these
+	ui8 Name[256];	///< current keyword
+	ui8 Length;		///< current keyword length
+	ui32 Doc;		///< current docid
+	ui32 Pos;		///< current position
+
+	/// Compress() fills this
 	struct TDoc {
 		ui32 Id;
 		std::vector<ui32> PostingList;
 	};
-	ui8 Count;
-	std::vector<TDoc> Docs;
+	std::vector<TDoc> Docs;		///< current docid, and a positions list
 
-	IndexCompressor()
-		: Position(0)
-	{}
-
+public:
 	virtual void FlushWord() = 0;
 	virtual void PostCompress() = 0;
 	virtual void Decompress() = 0;
 
+public:
 	bool Read(FILE *fp) {
 		static int a = 0;
 		if (!feof(fp)) {
@@ -44,6 +49,7 @@ struct IndexCompressor
 			fread(&type, 1, 1, fp);
 			if (type) {
 				FlushWord();
+				Docs.clear();
 				fread(&Length, 1, 1, fp);
 				fread(Name, 1, Length, fp);
 				Name[(size_t)Length + 1] = 0;
@@ -64,6 +70,7 @@ struct IndexCompressor
 			Docs.back().PostingList.push_back(Pos);
 		}
 		FlushWord();
+		Docs.clear();
 	}
 };
 
@@ -113,7 +120,6 @@ struct THuffDecompressor {
 
 template<size_t Size>
 struct THuffCompressor {
-
 	const THuffEntry *Entries;
 	size_t EntryNum;
 	ui64 Count;
@@ -226,6 +232,10 @@ const THuffEntry posEntries[] = {
 
 struct HuffIndexCompressor : public IndexCompressor
 {
+	std::vector<ui8> Code;
+	ui64 Position;
+	ui8 Count;
+
 	THuffCompressor<1024> DocCompressor;
 	THuffCompressor<128> CntCompressor;
 	THuffCompressor<4096> PosCompressor;
@@ -237,7 +247,8 @@ struct HuffIndexCompressor : public IndexCompressor
 	THuffDecompressor<32> WrdDecompressor;
 
 	HuffIndexCompressor()
-		: DocCompressor(docEntries, sizeof(docEntries) / sizeof(docEntries[0]))
+		: Position(0)
+		, DocCompressor(docEntries, sizeof(docEntries) / sizeof(docEntries[0]))
 		, CntCompressor(cntEntries, sizeof(cntEntries) / sizeof(cntEntries[0]))
 		, PosCompressor(posEntries, sizeof(posEntries) / sizeof(posEntries[0]))
 		, WrdCompressor(cntEntries, sizeof(cntEntries) / sizeof(cntEntries[0]))
@@ -268,7 +279,6 @@ struct HuffIndexCompressor : public IndexCompressor
 				oldPosting = doc.PostingList[j];
 			}
 		}
-		Docs.clear();
 	}
 
 	void PostCompress()
@@ -311,7 +321,139 @@ struct HuffIndexCompressor : public IndexCompressor
 
 //////////////////////////////////////////////////////////////////////////
 
-int main(int argc, const char *argv[]) {
+void VarintCode(vector<ui8> & buf, ui32 value)
+{
+	do
+	{
+		buf.push_back(value<128
+			? value
+			: (value&0x7f) | 0x80);
+		value >>= 7;
+	} while (value);
+}
+
+
+ui32 VarintDecode(const ui8 ** pp)
+{
+	const ui8 * p = *pp;
+	ui32 res = 0;
+	int off = 0;
+	while ( *p & 0x80 )
+	{
+		res += ( *p++ & 0x7f )<<off;
+		off += 7;
+	}
+	res += ( *p++ << off );
+	*pp = p;
+	return res;
+}
+
+
+struct VarintIndexCompressor : public IndexCompressor
+{
+	vector<ui8> Dict;
+	vector<ui8> Data;
+	int Progress;
+	int PackedWords;
+	int PackedDocs;
+	int PackedHits;
+
+	VarintIndexCompressor()
+		: Progress(0)
+		, PackedWords(0)
+		, PackedDocs(0)
+		, PackedHits(0)
+	{}
+
+	virtual void FlushWord()
+	{
+		if (!(++Progress%100))
+		{
+			printf("%d\r", Progress);
+			fflush(stdout);
+		}
+		int p = Dict.size();
+		int t = Data.size();
+
+		// dict entry
+		PackedWords++;
+		Dict.resize(p + Length + 5);
+		Dict[p] = Length; // keyword
+		memcpy(&Dict[p+1], Name, Length);
+		memcpy(&Dict[p+1+Length], &t, 4); // offset into data
+
+		// documents and hits
+		PackedDocs += Docs.size();
+		ui32 uLastId = 0;
+		for (int i=0; i<Docs.size(); i++)
+		{
+			VarintCode(Data, Docs[i].Id - uLastId);
+			uLastId = Docs[i].Id;
+
+			const vector<ui32> & hits = Docs[i].PostingList;
+			PackedHits += hits.size();
+			VarintCode(Data, hits.size());
+
+			ui32 uLastHit = 0;
+			for (int j=0; j<hits.size(); j++)
+			{
+				VarintCode(Data, hits[j] - uLastHit);
+				uLastHit = hits[j];
+			}
+		}
+		VarintCode(Data, 0);
+	}
+
+	virtual void PostCompress()
+	{
+		printf("total %d bytes (%d dict, %d data), %d words\n",
+			Dict.size() + Data.size(), Dict.size(), Data.size(), Progress);
+		printf("packed %d words, %d docs, %d hits\n",
+			PackedWords, PackedDocs, PackedHits);
+	}
+
+	virtual void Decompress()
+	{
+		int words = 0, docs = 0, hits = 0;
+		const ui8 * w = &Dict[0];
+		const ui8 * wmax = w + Dict.size();
+		while (w<wmax)
+		{
+			words++;
+			w += 1+w[0]; // skip keyword
+
+			ui32 dataOffset = *(ui32*)w;
+			w += 4;
+
+			const ui8 * p = &Data[dataOffset];
+			ui32 uLastId = 0;
+			for (;;)
+			{
+				ui32 uDelta = VarintDecode(&p);
+				if (!uDelta)
+					break;
+
+				uLastId += uDelta;
+				docs++;
+
+				ui32 uDocHits = VarintDecode(&p);
+				hits += uDocHits;
+
+				ui32 uHit = 0;
+				for (int j=0; j<uDocHits; j++)
+					uHit += VarintDecode(&p);
+			}
+		}
+		if ( w!=wmax )
+			printf("oops, decompress screwed up\n");
+		printf("unpacked %d words, %d docs, %d hits\n", words, docs, hits);
+	}
+};
+
+//////////////////////////////////////////////////////////////////////////
+
+int main(int argc, const char *argv[])
+{
 	if (argc < 2)
 	{
 		printf("usage: test <postings.file>\n");
@@ -324,11 +466,18 @@ int main(int argc, const char *argv[]) {
 		return 1;
 	}
 
-	HuffIndexCompressor comp;
-	comp.Compress(fp);
-	comp.PostCompress();
-	float cl1 = clock();
-	comp.Decompress();
-	float cl2 = clock();
-	printf("decompress time %f seconds\n", (cl2 - cl1) / (float)CLOCKS_PER_SEC);
+	try
+	{
+		VarintIndexCompressor comp;
+		comp.Compress(fp);
+		comp.PostCompress();
+		float cl1 = clock();
+		comp.Decompress();
+		float cl2 = clock();
+		printf("decompress time %f seconds\n", (cl2 - cl1) / (float)CLOCKS_PER_SEC);
+	} catch (exception & e)
+	{
+		printf("exception: %s\n", e.what());
+	}
+
 }
