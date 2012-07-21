@@ -37,6 +37,7 @@ public:
 	};
 	std::vector<TDoc> Docs;		///< current docid, and a positions list
     int Progress;
+
 public:
 	Codec() : Progress(0) {}
 	virtual void FlushWord() = 0;
@@ -44,10 +45,6 @@ public:
 	virtual void Decompress() = 0;
 
 public:
-	IndexCompressor() 
-		: Progress(0)
-	{
-	}
 	void FlushWordInt() {
 		if (Docs.empty())
 			return;
