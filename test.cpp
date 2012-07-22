@@ -38,8 +38,17 @@ public:
 	std::vector<TDoc> Docs;		///< current docid, and a positions list
     int Progress;
 
+protected:
+	ui8 Buf[262144];
+	ui8 * BufMax;
+	ui8 * BufCur;
+
 public:
-	Codec() : Progress(0) {}
+	Codec()
+		: Progress(0)
+		, BufMax(Buf + sizeof(Buf))
+		, BufCur(Buf + sizeof(Buf))
+	{}
 	virtual void FlushWord() = 0;
 	virtual void PostCompress() = 0;
 	virtual void Decompress() = 0;
@@ -48,31 +57,57 @@ public:
 	void FlushWordInt() {
 		if (Docs.empty())
 			return;
-		if (!(++Progress%100))
+		if (!(++Progress%1000))
 		{
 			printf("%d\r", Progress);
 			fflush(stdout);
 		}
 		FlushWord();
-		Docs.clear();
+		Docs.resize(0);
     }
 
-	bool Read(FILE *fp) {
+	bool Read(FILE *fp)
+	{
 		static int a = 0;
-		if (!feof(fp)) {
-			ui8 type;
-			fread(&type, 1, 1, fp);
-			if (type) {
-				FlushWordInt();
-				fread(&Length, 1, 1, fp);
-				fread(Name, 1, Length, fp);
-				Name[(size_t)Length + 1] = 0;
-			}
-			fread(&Doc, 4, 1, fp);
-			fread(&Pos, 4, 1, fp);
-			return !feof(fp);
+
+		// are we totally out of data? read in some more
+		if (BufCur>=BufMax)
+		{
+			int Got = fread(Buf, 1, sizeof(Buf), fp);
+			if (!Got)
+				return false;
+			BufCur = Buf;
+			BufMax = Buf+Got;
 		}
-		return false;
+
+		// is the current entry complete?
+		ui8 type = *BufCur++;
+		if ((type==0 && BufCur+8>BufMax)
+			|| (type==1 && BufCur+9+BufCur[0]>BufMax))
+		{
+			int Left = BufMax-BufCur;
+			memmove(Buf, BufCur, Left);
+			int Got = fread(Buf+Left, 1, sizeof(Buf)-Left, fp);
+			if (!Got)
+				return false;
+			BufCur = Buf;
+			BufMax = Buf+Left+Got;
+		}
+
+		// safe to keep reading now
+		if (type)
+		{
+			FlushWordInt();
+			Length = *BufCur++;
+			memcpy(Name, BufCur, Length);
+			Name[(size_t)Length + 1] = 0;
+			BufCur += Length;
+		}
+
+		Doc = *(ui32*)BufCur;
+		Pos = *(ui32*)(BufCur+4);
+		BufCur += 8;
+		return true;
 	}
 
 	void Compress(FILE *fp) {
@@ -452,6 +487,15 @@ struct VarintCodec : public Codec
 
 //////////////////////////////////////////////////////////////////////////
 
+struct DummyCodec : public Codec
+{
+	virtual void FlushWord() {}
+	virtual void PostCompress() {}
+	virtual void Decompress() {}
+};
+
+//////////////////////////////////////////////////////////////////////////
+
 int main(int argc, const char *argv[])
 {
 	if (argc < 2)
@@ -469,15 +513,17 @@ int main(int argc, const char *argv[])
 	try
 	{
 		VarintCodec comp;
+
+		float t = clock();
 		comp.Compress(fp);
+		printf("compress time %f seconds\n", (clock() - t) / (float)CLOCKS_PER_SEC);
 		comp.PostCompress();
-		float cl1 = clock();
+
+		t = clock();
 		comp.Decompress();
-		float cl2 = clock();
-		printf("decompress time %f seconds\n", (cl2 - cl1) / (float)CLOCKS_PER_SEC);
+		printf("decompress time %f seconds\n", (clock() - t) / (float)CLOCKS_PER_SEC);
 	} catch (exception & e)
 	{
 		printf("exception: %s\n", e.what());
 	}
-
 }
