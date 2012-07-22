@@ -1,0 +1,70 @@
+Index: src/sphinx.cpp
+===================================================================
+--- src/sphinx.cpp	(revision 3296)
++++ src/sphinx.cpp	(working copy)
+@@ -9079,6 +9079,9 @@
+ }
+ 
+ 
++FILE * g_fpPost = NULL;
++CSphVector<int> g_Docids;
++
+ void CSphHitBuilder::cidxHit ( CSphAggregateHit * pHit, const CSphRowitem * pAttrs )
+ {
+ 	assert (
+@@ -9093,6 +9096,19 @@
+ 		( m_pDict->GetSettings().m_bWordDict && strcmp ( (char*)m_tLastHit.m_sKeyword, (char*)pHit->m_sKeyword ) ) ); // OPTIMIZE?
+ 	bool bNextDoc = bNextWord || ( m_tLastHit.m_iDocID!=pHit->m_iDocID );
+ 
++	if ( pHit->m_iWordID )
++	{
++		fwrite ( &bNextWord, 1, 1, g_fpPost );
++		if ( bNextWord )
++		{
++			BYTE uLen = strlen((char*)pHit->m_sKeyword);
++			fwrite ( &uLen, 1, 1, g_fpPost );
++			fwrite ( pHit->m_sKeyword, 1, uLen, g_fpPost );
++		}
++		fwrite ( &pHit->m_iDocID, 1, 4, g_fpPost );
++		fwrite ( &pHit->m_iWordPos, 1, 4, g_fpPost );
++	}
++
+ 	if ( bNextDoc )
+ 	{
+ 		// finish hitlist, if any
+@@ -10631,6 +10647,10 @@
+ 
+ int CSphIndex_VLN::Build ( const CSphVector<CSphSource*> & dSources, int iMemoryLimit, int iWriteBuffer )
+ {
++	g_fpPost = fopen("postings.bin", "wb+");
++	if ( !g_fpPost )
++		sphDie("failed to write postings");
++
+ 	PROFILER_INIT ();
+ 
+ 	assert ( dSources.GetLength() );
+@@ -10976,6 +10996,8 @@
+ 			if ( !pSource->m_tDocInfo.m_iDocID )
+ 				break;
+ 
++			g_Docids.Add ( pSource->m_tDocInfo.m_iDocID );
++
+ 			if ( bGotJoined )
+ 				dAllIds.Add ( pSource->m_tDocInfo.m_iDocID );
+ 
+@@ -11992,6 +12014,15 @@
+ 	ARRAY_FOREACH ( i, dSources )
+ 		dSources[i]->PostIndex ();
+ 
++	fclose(g_fpPost);
++
++	ARRAY_FOREACH(i, g_Docids)
++		g_Docids[i] -= m_iMinDocid; // adjust to match what cidxHit() logged
++
++	FILE * fp = fopen("docids.bin", "wb+");
++	fwrite(&g_Docids[0], 1, sizeof(int)*g_Docids.GetLength(), fp);
++	fclose(fp);
++
+ 	PROFILER_DONE ();
+ 	PROFILE_SHOW ();
+ 	dFileWatchdog.AllIsDone();
