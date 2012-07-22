@@ -410,13 +410,24 @@ struct HuffCodec : public Codec
 
 void VarintCode(vector<ui8> & buf, ui32 value)
 {
-	do
+	if (value >= (1UL<<7))
 	{
-		buf.push_back(value<128
-			? value
-			: (value&0x7f) | 0x80);
-		value >>= 7;
-	} while (value);
+		if (value >= (1UL<<14))
+		{
+			if (value >= (1UL<<28))
+			{
+				buf.push_back(0x80 | (value>>28));
+				buf.push_back(0x80 | (value>>21));
+			} else if (value >= (1UL<<21))
+			{
+				buf.push_back(0x80 | (value>>21));
+			}
+			buf.push_back(0x80 | (value>>14));
+		}
+		buf.push_back(0x80 | (value>>7));
+	}
+	buf.push_back(0x7f & value);
+	return;
 }
 
 
@@ -424,13 +435,9 @@ ui32 VarintDecode(const ui8 ** pp)
 {
 	const ui8 * p = *pp;
 	ui32 res = 0;
-	int off = 0;
 	while ( *p & 0x80 )
-	{
-		res += ( *p++ & 0x7f )<<off;
-		off += 7;
-	}
-	res += ( *p++ << off );
+		res = (res<<7) + ((*p++) & 0x7f);
+	res = (res<<7) + (*p++);
 	*pp = p;
 	return res;
 }
@@ -590,21 +597,18 @@ int main(int argc, const char *argv[])
 	try
 	{
 		VarintCodec comp;
+		float t;
 
-		if (false)
-		{
-			float t = clock();
-			comp.Compress(fp);
-			printf("compress time %f seconds\n", (clock() - t) / (float)CLOCKS_PER_SEC);
-			comp.PostCompress();
-			comp.Save();
-		} else
-		{
-			comp.Load();
-			float t = clock();
-			comp.Decompress();
-			printf("decompress time %f seconds\n", (clock() - t) / (float)CLOCKS_PER_SEC);
-		}
+		t = clock();
+		comp.Compress(fp);
+		printf("compress time %f seconds\n", (clock() - t) / (float)CLOCKS_PER_SEC);
+		comp.PostCompress();
+		comp.Save();
+
+		comp.Load();
+		t = clock();
+		comp.Decompress();
+		printf("decompress time %f seconds\n", (clock() - t) / (float)CLOCKS_PER_SEC);
 	} catch (exception & e)
 	{
 		printf("exception: %s\n", e.what());
