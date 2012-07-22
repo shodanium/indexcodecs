@@ -11,6 +11,8 @@
 #include <assert.h>
 #include <time.h>
 #include <string.h>
+#include <algorithm>
+#include <stdarg.h>
 
 using namespace std;
 
@@ -20,6 +22,17 @@ typedef unsigned int ui32;
 typedef unsigned long long ui64;
 
 //////////////////////////////////////////////////////////////////////////
+
+void die ( const char * sTemplate, ... )
+{
+	va_list ap;
+	va_start ( ap, sTemplate );
+	vprintf ( sTemplate, ap );
+	va_end ( ap );
+	printf ( "\n" );
+	exit ( 1 );
+}
+
 
 struct Codec
 {
@@ -37,6 +50,7 @@ public:
 	};
 	std::vector<TDoc> Docs;		///< current docid, and a positions list
     int Progress;
+	vector<ui32> Docids;
 
 protected:
 	ui8 Buf[262144];
@@ -48,7 +62,28 @@ public:
 		: Progress(0)
 		, BufMax(Buf + sizeof(Buf))
 		, BufCur(Buf + sizeof(Buf))
-	{}
+	{
+		FILE * fp = fopen("docids.bin", "rb+");
+		if (!fp)
+			die("failed to read docids.bin");
+		fseek(fp, 0, SEEK_END);
+		Docids.resize(ftell(fp) / 4);
+		fseek(fp, 0, SEEK_SET);
+		fread(&Docids[0], 4, Docids.size(), fp);
+		fclose(fp);
+		sort(Docids.begin(), Docids.end());
+	}
+
+	inline ui32 RemapId(ui32 Id) const
+	{
+		const ui32 * pId = lower_bound(&Docids[0], &Docids[0]+Docids.size(), Id);
+#if 0
+		if (!pId || *pId!=Id)
+			die("oops, docid not found");
+#endif
+		return pId - &Docids[0] + 1;
+	}
+
 	virtual void FlushWord() = 0;
 	virtual void PostCompress() = 0;
 	virtual void Decompress() = 0;
@@ -432,8 +467,9 @@ struct VarintCodec : public Codec
 		ui32 uLastId = 0;
 		for (int i=0; i<Docs.size(); i++)
 		{
-			VarintCode(Data, Docs[i].Id - uLastId);
-			uLastId = Docs[i].Id;
+			ui32 uId = RemapId(Docs[i].Id);
+			VarintCode(Data, uId - uLastId);
+			uLastId = uId;
 
 			const vector<ui32> & hits = Docs[i].PostingList;
 			PackedHits += hits.size();
@@ -522,7 +558,7 @@ int main(int argc, const char *argv[])
 
 	try
 	{
-		HuffCodec comp;
+		VarintCodec comp;
 
 		float t = clock();
 		comp.Compress(fp);
