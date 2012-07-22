@@ -21,7 +21,7 @@ typedef unsigned long long ui64;
 
 //////////////////////////////////////////////////////////////////////////
 
-struct IndexCompressor
+struct Codec
 {
 public:
 	/// Read() fills these
@@ -37,16 +37,14 @@ public:
 	};
 	std::vector<TDoc> Docs;		///< current docid, and a positions list
     int Progress;
+
 public:
+	Codec() : Progress(0) {}
 	virtual void FlushWord() = 0;
 	virtual void PostCompress() = 0;
 	virtual void Decompress() = 0;
 
 public:
-	IndexCompressor() 
-		: Progress(0)
-	{
-	}
 	void FlushWordInt() {
 		if (Docs.empty())
 			return;
@@ -58,6 +56,7 @@ public:
 		FlushWord();
 		Docs.clear();
     }
+
 	bool Read(FILE *fp) {
 		static int a = 0;
 		if (!feof(fp)) {
@@ -245,7 +244,7 @@ const THuffEntry posEntries[] = {
 };
 
 
-struct HuffIndexCompressor : public IndexCompressor
+struct HuffCodec : public Codec
 {
 	std::vector<ui8> Code;
 	ui64 Position;
@@ -261,7 +260,7 @@ struct HuffIndexCompressor : public IndexCompressor
 	THuffDecompressor<32> PosDecompressor;
 	THuffDecompressor<32> WrdDecompressor;
 
-	HuffIndexCompressor()
+	HuffCodec()
 		: Position(0)
 		, DocCompressor(docEntries, sizeof(docEntries) / sizeof(docEntries[0]))
 		, CntCompressor(cntEntries, sizeof(cntEntries) / sizeof(cntEntries[0]))
@@ -357,7 +356,7 @@ ui32 VarintDecode(const ui8 ** pp)
 }
 
 
-struct VarintIndexCompressor : public IndexCompressor
+struct VarintCodec : public Codec
 {
 	vector<ui8> Dict;
 	vector<ui8> Data;
@@ -365,7 +364,7 @@ struct VarintIndexCompressor : public IndexCompressor
 	int PackedDocs;
 	int PackedHits;
 
-	VarintIndexCompressor()
+	VarintCodec()
 		: PackedWords(0)
 		, PackedDocs(0)
 		, PackedHits(0)
@@ -469,7 +468,7 @@ int main(int argc, const char *argv[])
 
 	try
 	{
-		VarintIndexCompressor comp;
+		VarintCodec comp;
 		comp.Compress(fp);
 		comp.PostCompress();
 		float cl1 = clock();
