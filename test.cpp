@@ -529,6 +529,37 @@ struct VarintCodec : public Codec
 			printf("oops, decompress screwed up\n");
 		printf("unpacked %d words, %d docs, %d hits\n", words, docs, hits);
 	}
+
+	void Save()
+	{
+		FILE * fp = fopen("postings.varint", "wb+");
+		if (!fp)
+			die("failed to write postings.varint");
+		int iLen = Dict.size();
+		fwrite(&iLen, 1, 4, fp);
+		fwrite(&Dict[0], 1, iLen, fp);
+		iLen = Data.size();
+		fwrite(&iLen, 1, 4, fp);
+		fwrite(&Data[0], 1, iLen, fp);
+		fclose(fp);
+	}
+
+	void Load()
+	{
+		FILE * fp = fopen("postings.varint", "rb");
+		if (!fp)
+			die("failed to read postings.varint");
+		int iLen;
+		fread(&iLen, 1, 4, fp);
+		Dict.resize(iLen);
+		if (fread(&Dict[0], 1, iLen, fp)!=iLen)
+			die("dict read failed");
+		fread(&iLen, 1, 4, fp);
+		Data.resize(iLen);
+		if (fread(&Data[0], 1, iLen, fp)!=iLen)
+			die("data read failed");
+		fclose(fp);
+	}
 };
 
 //////////////////////////////////////////////////////////////////////////
@@ -560,14 +591,20 @@ int main(int argc, const char *argv[])
 	{
 		VarintCodec comp;
 
-		float t = clock();
-		comp.Compress(fp);
-		printf("compress time %f seconds\n", (clock() - t) / (float)CLOCKS_PER_SEC);
-		comp.PostCompress();
-
-		t = clock();
-		comp.Decompress();
-		printf("decompress time %f seconds\n", (clock() - t) / (float)CLOCKS_PER_SEC);
+		if (false)
+		{
+			float t = clock();
+			comp.Compress(fp);
+			printf("compress time %f seconds\n", (clock() - t) / (float)CLOCKS_PER_SEC);
+			comp.PostCompress();
+			comp.Save();
+		} else
+		{
+			comp.Load();
+			float t = clock();
+			comp.Decompress();
+			printf("decompress time %f seconds\n", (clock() - t) / (float)CLOCKS_PER_SEC);
+		}
 	} catch (exception & e)
 	{
 		printf("exception: %s\n", e.what());
