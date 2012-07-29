@@ -266,13 +266,24 @@ struct HuffCodec : public Codec
 
 void VarintCode(vector<ui8> & buf, ui32 value)
 {
-	do
+	if (value >= (1UL<<7))
 	{
-		buf.push_back(value<128
-			? value
-			: (value&0x7f) | 0x80);
-		value >>= 7;
-	} while (value);
+		if (value >= (1UL<<14))
+		{
+			if (value >= (1UL<<28))
+			{
+				buf.push_back(0x80 | (value>>28));
+				buf.push_back(0x80 | (value>>21));
+			} else if (value >= (1UL<<21))
+			{
+				buf.push_back(0x80 | (value>>21));
+			}
+			buf.push_back(0x80 | (value>>14));
+		}
+		buf.push_back(0x80 | (value>>7));
+	}
+	buf.push_back(0x7f & value);
+	return;
 }
 
 
@@ -280,13 +291,9 @@ ui32 VarintDecode(const ui8 ** pp)
 {
 	const ui8 * p = *pp;
 	ui32 res = 0;
-	int off = 0;
 	while ( *p & 0x80 )
-	{
-		res += ( *p++ & 0x7f )<<off;
-		off += 7;
-	}
-	res += ( *p++ << off );
+		res = (res<<7) + ((*p++) & 0x7f);
+	res = (res<<7) + (*p++);
 	*pp = p;
 	return res;
 }
@@ -385,6 +392,37 @@ struct VarintCodec : public Codec
 			printf("oops, decompress screwed up\n");
 		printf("unpacked %d words, %d docs, %d hits\n", words, docs, hits);
 	}
+
+	void Save()
+	{
+		FILE * fp = fopen("postings.varint", "wb+");
+		if (!fp)
+			die("failed to write postings.varint");
+		int iLen = Dict.size();
+		fwrite(&iLen, 1, 4, fp);
+		fwrite(&Dict[0], 1, iLen, fp);
+		iLen = Data.size();
+		fwrite(&iLen, 1, 4, fp);
+		fwrite(&Data[0], 1, iLen, fp);
+		fclose(fp);
+	}
+
+	void Load()
+	{
+		FILE * fp = fopen("postings.varint", "rb");
+		if (!fp)
+			die("failed to read postings.varint");
+		int iLen;
+		fread(&iLen, 1, 4, fp);
+		Dict.resize(iLen);
+		if (fread(&Dict[0], 1, iLen, fp)!=iLen)
+			die("dict read failed");
+		fread(&iLen, 1, 4, fp);
+		Data.resize(iLen);
+		if (fread(&Data[0], 1, iLen, fp)!=iLen)
+			die("data read failed");
+		fclose(fp);
+	}
 };
 
 //////////////////////////////////////////////////////////////////////////
@@ -435,6 +473,8 @@ struct GroupHuffCodec : public Codec
         printf("docs %lld hits %lld total %lld\n", DocPosition / 8, HitPosition / 8, DocPosition / 8 + HitPosition / 8);
         printf("packed docs %lld packed hits %lld\n", DocNum, HitNum);
     }
+    virtual void Load() {}
+    virtual void Save() {}
 	virtual void Decompress() {
         ui64 docPosition = 0;
         const ui8 *docs = &DocData[0];
@@ -477,13 +517,18 @@ int main(int argc, const char *argv[])
 
 	try
 	{
-		GroupHuffCodec comp;
 
-		float t = clock();
+		GroupHuffCodec comp;
+        float t;
+
+
+		t = clock();
 		comp.Compress(fp);
 		printf("compress time %f seconds\n", (clock() - t) / (float)CLOCKS_PER_SEC);
 		comp.PostCompress();
+		comp.Save();
 
+		comp.Load();
 		t = clock();
 		comp.Decompress();
 		printf("decompress time %f seconds\n", (clock() - t) / (float)CLOCKS_PER_SEC);
