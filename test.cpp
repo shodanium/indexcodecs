@@ -1,38 +1,9 @@
+
 // cl /O2 /EHsc test.cpp
 // test postings.bin
-
-#define _SECURE_SCL 0
-#pragma runtime_checks("",off)
-#define _HAS_ITERATOR_DEBUGGING 0
-
-#include <stdlib.h>
-#include <stdio.h>
-#include <vector>
-#include <assert.h>
-#include <time.h>
-#include <string.h>
-#include <algorithm>
-#include <stdarg.h>
-
-using namespace std;
-
-typedef unsigned char ui8;
-typedef unsigned short ui16;
-typedef unsigned int ui32;
-typedef unsigned long long ui64;
-
 //////////////////////////////////////////////////////////////////////////
-
-void die ( const char * sTemplate, ... )
-{
-	va_list ap;
-	va_start ( ap, sTemplate );
-	vprintf ( sTemplate, ap );
-	va_end ( ap );
-	printf ( "\n" );
-	exit ( 1 );
-}
-
+#include "common.h"
+#include "group_huffman.h"
 
 struct Codec
 {
@@ -159,136 +130,22 @@ public:
 };
 
 //////////////////////////////////////////////////////////////////////////
-
-struct THuffEntry {
-	ui32 CodeBase;
-	ui16 Prefix;
-	ui8 PrefLength;
-	ui8 CodeLength;
-	bool inline Fit(ui32 code) const {
-		return code >= CodeBase && code < CodeBase + (1ULL << CodeLength);
-	}
-};
-
-template<size_t Size>
-struct THuffDecompressor {
-	THuffDecompressor(const THuffEntry *entries, size_t entryNum) {
-		for (size_t i = 0; i < Size; ++i) {
-			bool init = false;
-			for (size_t j = 0; j < entryNum; ++j) {
-				const THuffEntry &entry = entries[j];
-				ui16 prefix = i & ((1 << entry.PrefLength) - 1);
-				if (entry.Prefix == prefix) {
-					init = true;
-					Mask[i] = (ui32)((1ULL << entry.CodeLength) - 1ULL);
-					Add[i] = entry.PrefLength + entry.CodeLength; 
-					PrefLength[i] = entry.PrefLength;
-					CodeBase[i] = entry.CodeBase;
-					break;
-				}
-			}
-			assert(init);
-		}
-	}
-	ui32 Mask[Size];
-	ui32 Add[Size];
-	ui32 PrefLength[Size];
-	ui32 CodeBase[Size];
-	ui32 Decompress(const ui8 *codes, ui64 &offset) {
-		ui64 code = (*((const ui64 *)(codes + (offset >> 3)))) >> (offset & 7);
-		ui32 index = code % Size;
-		offset += Add[index];
-		return (ui32(code >> PrefLength[index]) & Mask[index]) + CodeBase[index];
-	}
-};
-
-template<size_t Size>
-struct THuffCompressor {
-	const THuffEntry *Entries;
-	size_t EntryNum;
-	ui64 Count;
-
-	struct THashEntry {
-		ui32 Value;
-		ui32 CodeSize;
-		ui64 Code;
-	};
-
-	THashEntry Hashes[Size];
-
-	size_t Hash(ui32 value) {
-		return value % Size;
-	}
-
-	THuffCompressor(const THuffEntry *entries, size_t entryNum) 
-		: Entries(entries)
-		, EntryNum(entryNum)
-		, Count(0)
-	{
-		for (size_t i = 0; i < Size; ++i) {
-			ui32 j = 0;
-			for (; Hash(j) == i; ++j){}
-			Hashes[i].Value = j;
-		}
-	}
-
-	const THashEntry &GetCode(ui32 value) {
-		THashEntry &code = Hashes[Hash(value)];
-		if (code.Value == value)
-			return code;
-
-		code.Value = value;
-		for (size_t i = 0; i < EntryNum; ++i) {
-			const THuffEntry &entry = Entries[i];
-			if (Entries[i].Fit(value)) {
-				code.CodeSize = entry.CodeLength + entry.PrefLength;
-				code.Code = ((ui64(value) - entry.CodeBase) << entry.PrefLength) + entry.Prefix;
-				return code;
-			}
-		}
-		code.Code = 0;
-		code.CodeSize = 0;
-		assert(0);
-		return code;
-	}
-
-	void Code(std::vector<ui8> &data, ui32 value, ui64 &position) {
-		++Count;
-		const THashEntry &entry = GetCode(value);
-		size_t index = (size_t)(position >> 3);
-		if (data.size() < index + 8) {
-			data.resize((data.size() * 3 / 2) + 8, 0);
-		}
-		ui32 size = entry.CodeSize;
-		ui64 code = entry.Code;
-		ui8 *dst = &data[index];
-		ui64 &outCode = *(ui64 *)dst;
-		ui8 shift = position & 7;
-		ui64 mask = ((1ULL << size) - 1ULL) << shift;
-		outCode = ((code << shift) & mask) | (outCode & ~mask);
-		position += size;
-	}
-};
-
-
 const THuffEntry docEntries[] = {
-{0x00000000, 0x05, 0x04, 0x04},
-{0x00000010, 0x06, 0x04, 0x04},
-{0x00000040, 0x0e, 0x05, 0x04},
-{0x00000030, 0x1e, 0x05, 0x04},
-{0x00000020, 0x13, 0x05, 0x04},
-{0x00000000, 0x07, 0x03, 0x08},
-{0x00000100, 0x00, 0x03, 0x08},
-{0x00000200, 0x0c, 0x04, 0x08},
-{0x00000300, 0x03, 0x05, 0x08},
-{0x00000400, 0x02, 0x05, 0x08},
-{0x00000000, 0x01, 0x03, 0x0c},
-{0x00001000, 0x0a, 0x04, 0x0c},
-{0x00002000, 0x12, 0x05, 0x0c},
-{0x00000000, 0x0b, 0x04, 0x10},
-{0x00000000, 0x0d, 0x04, 0x14},
-{0x0c000000, 0x04, 0x05, 0x18},
-{0x00000000, 0x14, 0x05, 0x1c},
+{0x00000001, 0x00, 0x02, 0x00},
+{0x00000002, 0x07, 0x04, 0x00},
+{0x00000003, 0x01, 0x04, 0x00},
+{0x00000004, 0x0b, 0x05, 0x00},
+{0x00000005, 0x03, 0x05, 0x00},
+{0x00000006, 0x16, 0x05, 0x00},
+{0x00000000, 0x05, 0x03, 0x04},
+{0x00000010, 0x0f, 0x04, 0x04},
+{0x00000020, 0x1b, 0x05, 0x04},
+{0x00000030, 0x09, 0x05, 0x04},
+{0x00000000, 0x02, 0x03, 0x08},
+{0x00000100, 0x19, 0x05, 0x08},
+{0x00000000, 0x0e, 0x04, 0x0c},
+{0x00000000, 0x13, 0x05, 0x10},
+{0x00000000, 0x06, 0x05, 0x12},
 };
 
 const THuffEntry cntEntries[] = {
@@ -300,7 +157,6 @@ const THuffEntry cntEntries[] = {
 {0x00000000, 0x0e, 0x04, 0x04},
 {0x00000010, 0x12, 0x05, 0x04},
 {0x00000000, 0x02, 0x05, 0x12},
-
 };
 
 const THuffEntry posEntries[] = {
@@ -320,7 +176,6 @@ const THuffEntry posEntries[] = {
 {0x01000000, 0x04, 0x03, 0x0c},
 {0x00000000, 0x0e, 0x04, 0x0c},
 {0x00000000, 0x01, 0x05, 0x19},
-
 };
 
 
@@ -357,8 +212,9 @@ struct HuffCodec : public Codec
 		ui32 oldDoc = ui32(-1);
 		for (size_t i = 0; i < Docs.size(); ++i) {
 			const TDoc &doc = Docs[i];
-			DocCompressor.Code(Code, doc.Id - oldDoc, Position);
-			oldDoc = doc.Id;
+            ui32 uId = RemapId(doc.Id);
+			DocCompressor.Code(Code, uId - oldDoc, Position);
+			oldDoc = uId;
 			CntCompressor.Code(Code, doc.PostingList.size(), Position);
 			ui32 oldPosting = ui32(-1);
 			for (size_t j = 0; j < doc.PostingList.size(); ++j) {
@@ -532,13 +388,76 @@ struct VarintCodec : public Codec
 };
 
 //////////////////////////////////////////////////////////////////////////
-
-struct DummyCodec : public Codec
+struct GroupHuffCodec : public Codec
 {
-	virtual void FlushWord() {}
-	virtual void PostCompress() {}
-	virtual void Decompress() {}
+    std::vector<ui8> DocData;
+    ui64 DocPosition;
+    std::vector<ui8> HitData;
+    ui64 HitPosition;
+    ui64 DocNum;
+    ui64 HitNum;
+    
+
+    GroupHuffCodec()
+        : DocPosition(0)
+        , HitPosition(0)
+        , DocNum(0)
+        , HitNum(0)
+    {
+    }
+
+
+    virtual void FlushWord() {
+        ui32 uLastId = -1;
+        std::vector<ui8> data;
+        ui64 position = 0;
+        for (int i=0; i<Docs.size(); i++)
+        {
+            ui32 uId = RemapId(Docs[i].Id);
+            docidCompressor.Add(DocData, uId - uLastId, DocPosition);
+            uLastId = uId;
+            ui32 uLastHit = 1 << 24;
+            const vector<ui32> & hits = Docs[i].PostingList;
+            ++DocNum;
+            hitNumCompressor.Add(DocData, hits.size(), DocPosition);
+            for (int j=0; j<hits.size(); j++)
+            {
+                ++HitNum;
+                hitsCompressor.Add(HitData, hits[j] - uLastHit, HitPosition);
+                uLastHit = hits[j];
+            }
+        }
+    }
+    virtual void PostCompress() {
+        docidCompressor.Flush(DocData, DocPosition);
+        hitNumCompressor.Flush(DocData, DocPosition);
+        hitsCompressor.Flush(HitData, HitPosition);
+        printf("docs %lld hits %lld total %lld\n", DocPosition / 8, HitPosition / 8, DocPosition / 8 + HitPosition / 8);
+        printf("packed docs %lld packed hits %lld\n", DocNum, HitNum);
+    }
+	virtual void Decompress() {
+        ui64 docPosition = 0;
+        const ui8 *docs = &DocData[0];
+        ui64 docNum = 0;
+        while (docPosition < DocPosition) {
+            volatile ui32 docids[4];
+            volatile ui32 hitnums[4];
+            docNum += 4;
+            docidDecompressor.Decompress(docs, docPosition, docids);
+            hitNumDecompressor.Decompress(docs, docPosition, hitnums);
+        }
+        ui64 hitPosition = 0;
+        const ui8 *hits = &HitData[0];
+        ui64 hitNum = 0;
+        while (hitPosition < HitPosition) {
+            volatile ui32 hit[4];
+            hitNum += 4;
+            hitsDecompressor.Decompress(hits, hitPosition, hit);
+        }
+        printf("unpacked docs %lld hits %lld\n", docNum, hitNum); 
+    }
 };
+
 
 //////////////////////////////////////////////////////////////////////////
 
@@ -558,7 +477,7 @@ int main(int argc, const char *argv[])
 
 	try
 	{
-		VarintCodec comp;
+		GroupHuffCodec comp;
 
 		float t = clock();
 		comp.Compress(fp);
